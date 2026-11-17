@@ -23,6 +23,22 @@ START = "070000004288"
 ADMIN_PIN = os.environ.get("PMTT_ADMIN_PIN", "")
 
 
+class PgConnection:
+    def __init__(self, dsn):
+        import psycopg
+        self.raw = psycopg.connect(dsn, autocommit=True, prepare_threshold=None, connect_timeout=12, sslmode='require')
+
+    def execute(self, query, params=()):
+        q = query.strip()
+        if q == 'BEGIN IMMEDIATE':
+            self.raw.execute('BEGIN')
+            self.raw.execute('SELECT pg_advisory_xact_lock(701215)')
+            return None
+        if 'INSERT OR IGNORE INTO citizens' in q:
+            q = q.replace('INSERT OR IGNORE INTO citizens', 'INSERT INTO citizens') + ' ON CONFLICT DO NOTHING'
+        q = q.replace("json_extract(payload,'$.fields[3]')", "(payload::jsonb -> 'fields' ->> 3)")
+        return self.raw.execute(q.replace('?', '%s'), params)
+
 def connect(dbpath):
     global conn
     conn = sqlite3.connect(
