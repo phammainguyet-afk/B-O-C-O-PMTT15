@@ -2412,4 +2412,142 @@ start().catch(err=>{console.error(err);$('saveState').textContent='⚠️ Không
   else {buildTopFinal(); ensureDeleteVisible();}
 })();
 </script>
+
+<style id="pmtt-fix-citizen-errors-style">
+#pmttCitizenControls{margin:15px 0;padding:18px;border:1px solid #acd9c9;background:linear-gradient(120deg,#f0fff8,#fff9fc);border-radius:15px}
+#pmttCitizenControls h3{margin:0 0 8px;color:#217b6a}
+#pmttCitizenControls .pmtt-control-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0}
+#pmttCitizenControls label{display:flex;align-items:center;gap:5px;cursor:pointer}
+#pmttCitizenControls input.pmtt-number{width:220px;max-width:100%;padding:10px;border:1px solid #a9d4c7;border-radius:9px}
+#pmttCitizenControls .pmtt-pin{width:170px;padding:10px;border:1px solid #a9d4c7;border-radius:9px}
+#pmttCitizenControls .pmtt-help{color:#577487;font-size:12px;line-height:1.65}
+#pmttCitizenControls .pmtt-control-status{font-size:12px;margin-top:8px;font-weight:700}
+#pmttIssueLinks{padding:12px;border:1px solid #e6a7b6;background:#fff5f7;border-radius:12px;margin:12px 0}
+#pmttIssueLinks button{display:block;text-align:left;width:100%;margin:5px 0;padding:9px;border:1px solid #eac6ce;background:white;color:#963653;border-radius:8px;white-space:normal}
+#pmttIssueLinks .pmtt-warning-line{margin:5px 0;padding:8px;background:white;color:#9b6b36;border-radius:8px}
+#editForm .pmtt-field-error{outline:2px solid #d64e68!important;outline-offset:2px;background:#fff4f6!important}
+#editForm .pmtt-field-error input,#editForm .pmtt-field-error select,#editForm .pmtt-field-error textarea{border-color:#cd3d5a!important}
+</style>
+<script id="pmtt-citizen-and-error-fix">
+(function(){
+'use strict';
+const by=(id)=>document.getElementById(id);
+const valid=(v)=>/^[0-9]{12}$/.test(v)&&v!=='000000000000';
+let expectedNumber='';
+let loading=false;
+function codeMode(){return typeof pmttMode==='string'?pmttMode:'official';}
+function remote(){return typeof v45Remote!=='undefined'&&v45Remote;}
+function setStatus(t){const e=by('pmttCitizenStatus');if(e)e.textContent=t;}
+async function refreshNumber(){
+ if(!remote()){setStatus('Đây là bản cục bộ. Chỉ có thể thay số trên kho chung đã kết nối.');return;}
+ const result=await v45Request('citizen-config');
+ if(!valid(result.next))throw Error('Máy chủ không trả về số 12 chữ số hợp lệ');
+ expectedNumber=result.next;
+ const e=by('pmttCurrentNumber');if(e)e.textContent=result.next;
+ if(typeof state!=='undefined'){state.nextCitizen=result.next;if(typeof renderCitizenSummary==='function')renderCitizenSummary();}
+ setStatus('Đang dùng chế độ '+(codeMode()==='trial'?'THỬ NGHIỆM':'CHÍNH THỨC')+'. Nếu không đổi số, ca mới tiếp tục tự tăng.');
+}
+function mountCitizen(){
+ const page=by('page-citizens');
+ if(!page||by('pmttCitizenControls'))return;
+ const panel=document.createElement('section');
+ panel.id='pmttCitizenControls';
+ panel.innerHTML='<h3>🪪 Chọn số tự cấp theo ngày — không bắt buộc</h3>'
+  +'<div class="pmtt-help">Ngày nào không đổi, hệ thống tự tăng tiếp. Ngày nào muốn bắt đầu dãy số khác, nhập số 12 chữ số và xác nhận. Số đã cấp cho ca cũ vẫn giữ nguyên, hệ thống kiểm tra số trùng trước khi cấp.</div>'
+  +'<div class="pmtt-control-row"><b>Số tiếp theo trên kho chung:</b><strong id="pmttCurrentNumber">Đang kiểm tra…</strong><button type="button" class="btn small" id="pmttRefreshNumber">↻ Kiểm tra số</button></div>'
+  +'<div class="pmtt-control-row"><label><input type="radio" name="pmttNumberRule" value="continue" checked> Tiếp tục tự động</label><label><input type="radio" name="pmttNumberRule" value="custom"> Tôi muốn đổi số bắt đầu</label></div>'
+  +'<div id="pmttCustomNumber" style="display:none"><div class="pmtt-control-row"><input class="pmtt-number" id="pmttNewNumber" inputmode="numeric" maxlength="12" placeholder="Ví dụ: 070000005000" aria-label="Số tiếp theo"/><input class="pmtt-pin" type="password" id="pmttAdminPin" autocomplete="off" placeholder="Mã quản trị riêng" aria-label="Mã quản trị"/><button type="button" class="btn primary" id="pmttConfirmNumber">Xác nhận đổi số</button></div><div class="pmtt-help">Chỉ người có mã PMTT_ADMIN_PIN của máy chủ mới đổi được. Không gửi mã quản trị qua chat.</div></div>'
+  +'<div id="pmttCitizenStatus" role="status" class="pmtt-control-status"></div>';
+ page.querySelector('.ledger-hero')?.insertAdjacentElement('afterend',panel);
+ panel.querySelectorAll('input[name="pmttNumberRule"]').forEach(r=>r.addEventListener('change',()=>{
+  by('pmttCustomNumber').style.display=panel.querySelector('input[name="pmttNumberRule"]:checked').value==='custom'?'block':'none';
+ }));
+ by('pmttRefreshNumber').addEventListener('click',()=>refreshNumber().catch(e=>setStatus('⚠ '+e.message)));
+ by('pmttConfirmNumber').addEventListener('click',async()=>{
+  if(loading)return;
+  const next=by('pmttNewNumber').value.trim();
+  const pin=by('pmttAdminPin').value;
+  if(!valid(next)){setStatus('⚠ Cần nhập đủ 12 chữ số, gồm các số 0 đầu.');return;}
+  if(!remote()){setStatus('⚠ Chưa có kho chung kết nối; không thể thay số.');return;}
+  if(!pin){setStatus('⚠ Cần nhập mã quản trị Render.');return;}
+  try{
+   loading=true;by('pmttConfirmNumber').disabled=true;
+   await refreshNumber();
+   if(next===expectedNumber){setStatus('Số này đang là số tiếp theo rồi, không cần đổi.');return;}
+   if(!confirm('Đổi số tiếp theo từ '+expectedNumber+' thành '+next+'?\nCác số đã cấp trước đây không bị thay đổi.'))return;
+   const response=await fetch('/api/citizen-config?mode='+encodeURIComponent(codeMode()),{
+    method:'POST',credentials:'same-origin',cache:'no-store',
+    headers:{'Content-Type':'application/json','X-PMTT-Admin-Pin':pin},
+    body:JSON.stringify({expected:expectedNumber,next})
+   });
+   const result=await response.json().catch(()=>({}));
+   if(!response.ok)throw Error(result.error||('Lỗi máy chủ '+response.status));
+   by('pmttNewNumber').value='';by('pmttAdminPin').value='';
+   panel.querySelector('input[name="pmttNumberRule"][value="continue"]').checked=true;
+   by('pmttCustomNumber').style.display='none';
+   await refreshNumber();
+   setStatus('✅ Đã lưu số mới. Không phải nhập lại vào ngày mai; hệ thống tự tăng khi có ca mới.');
+  }catch(e){setStatus('⚠ Không đổi được số: '+e.message);}
+  finally{loading=false;by('pmttConfirmNumber').disabled=false;}
+ });
+ page.addEventListener('click',()=>{if(!page.classList.contains('hidden'))refreshNumber().catch(()=>{});},{once:true});
+ refreshNumber().catch(e=>setStatus('⚠ '+e.message));
+}
+const fieldPatterns=[
+ [/họ tên/i,[1]],[/mã bệnh nhân|mã HSBA/i,[2]],[/CCCD|giấy tờ/i,[3]],[/ngày sinh/i,[4]],
+ [/giới tính/i,[5]],[/dân tộc/i,[6]],[/nghề nghiệp/i,[7]],
+ [/tỉnh|TP không/i,[8]],[/xã|phường/i,[9]],[/chẩn đoán chính/i,[14]],
+ [/mã cấp độ|phân độ/i,[15]],[/vắc xin/i,[16]],[/số lần/i,[17]],
+ [/phân loại chẩn đoán/i,[18]],[/XN xác định phải/i,[19]],[/loại XN khác/i,[22]],
+ [/xét nghiệm nhưng thiếu/i,[20,21,23]],[/ngày lấy mẫu/i,[23]],
+ [/ngày khởi phát/i,[24]],[/ngày nhập viện|ngày điều trị|ngày khám/i,[25]],
+ [/ra viện thiếu/i,[28,26]],[/chuyển viện/i,[29]],[/tình trạng khác/i,[30]],
+ [/tình trạng hiện tại/i,[27]]
+];
+function fieldsFor(msg){
+ const m=/^Cột ([0-9]+) khác giá trị/i.exec(msg);
+ if(m)return [Number(m[1])-1];
+ for(const [rx,indices] of fieldPatterns)if(rx.test(msg))return indices;
+ return [];
+}
+let issueTimer;
+function renderIssuePanel(){
+ const dialog=by('editDialog'),form=by('editForm'),warnings=by('editWarnings');
+ if(!dialog?.open||!form||!warnings||!state?.editing)return;
+ const c=typeof byId==='function'?byId(state.editing):null;
+ if(!c)return;
+ const fields=c.fields.slice();
+ for(let i=1;i<37;i++){const input=by('f'+i);if(input)fields[i]=input.value.trim();}
+ const draft={...c,fields};
+ let errors;
+ try{errors=typeof issueList==='function'?issueList(draft):[];}catch(e){return;}
+ form.querySelectorAll('.pmtt-field-error').forEach(x=>x.classList.remove('pmtt-field-error'));
+ let panel=by('pmttIssueLinks');
+ if(!panel){panel=document.createElement('div');panel.id='pmttIssueLinks';warnings.appendChild(panel);}
+ if(panel.parentNode!==warnings)warnings.appendChild(panel);
+ panel.replaceChildren();
+ const title=document.createElement('strong');title.textContent=errors.length?'⚠ '+errors.length+' mục cần kiểm tra — bấm để đến ô liên quan':'✅ Chưa phát hiện lỗi theo quy tắc đang áp dụng';
+ panel.append(title);
+ for(const message of errors){
+  const indices=fieldsFor(message).filter(i=>i>=1&&i<=36);
+  const row=document.createElement(indices.length?'button':'div');
+  if(indices.length){row.type='button';row.textContent='✎ '+message;row.addEventListener('click',()=>{
+   const target=by('f'+indices[0]);if(target){target.scrollIntoView({behavior:'smooth',block:'center'});target.focus();}
+  });}else{row.className='pmtt-warning-line';row.textContent='⚠ '+message+' (cần đối chiếu hồ sơ)';}
+  panel.append(row);
+  indices.forEach(i=>by('f'+i)?.closest('.field')?.classList.add('pmtt-field-error'));
+ }
+}
+function scheduleIssues(){clearTimeout(issueTimer);issueTimer=setTimeout(renderIssuePanel,80);}
+function mountErrors(){
+ const form=by('editForm');if(!form)return;
+ new MutationObserver(scheduleIssues).observe(form,{childList:true});
+ form.addEventListener('input',scheduleIssues);
+ form.addEventListener('change',scheduleIssues);
+ by('editDialog')?.addEventListener('close',()=>{by('pmttIssueLinks')?.remove();});
+}
+function init(){mountCitizen();mountErrors();}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+})();
+</script>
 </body></html>
