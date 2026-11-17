@@ -1106,7 +1106,44 @@ async function v11RepairOccupationInPendingCases(){
  }
  if(fixedRows.length){await dbPut('cases',fixedRows);notify(`🐼 Đã sửa nghề nghiệp thành “Còn nhỏ” cho ${fixedRows.length} ca dưới 6 tuổi có ô lỗi/trống. Dữ liệu gốc vẫn được giữ.`);}
 }
-async function loadAll(){state.cases=await dbAll('cases');await v11RepairOccupationInPendingCases();state.batches=await dbAll('batches');state.nextCitizen=(await dbGet('prefs','nextCitizen'))?.value||citizenStart;state.v10AddressPlaceholder=(await dbGet('prefs','v10AddressPlaceholder'))?.value||'.';alertIndex();render();}
+// V49: tải một snapshot duy nhất thay vì tải lại toàn bộ hồ sơ 4 lần.
+// Bản remote giữ nguyên phân vùng thử nghiệm/chính thức và không tự nhập dữ liệu bệnh nhân.
+async function loadAll(){
+ if(v45Remote){
+   setSaveLabel('● Đang tải một lần từ kho chung...');
+   let snapshot;
+   for(let attempt=0;attempt<2;attempt++){
+     try{snapshot=await v45Request('snapshot');break;}
+     catch(e){
+       if(attempt>0||!/Failed to fetch|NetworkError|Load failed/i.test(String(e.message||e)))throw e;
+       await new Promise(resolve=>setTimeout(resolve,1200));
+     }
+   }
+   if(!snapshot?.data||!Array.isArray(snapshot.data.cases))throw Error('Kho dữ liệu trả về danh sách ca không hợp lệ');
+   v45Revision=Number(snapshot.revision)||0;
+   v45Versions={cases:{},batches:{},prefs:{}};
+   for(const [composite,version] of Object.entries(snapshot.versions||{})){
+     const colon=composite.indexOf(':');
+     if(colon<0)continue;
+     const store=composite.slice(0,colon),id=composite.slice(colon+1);
+     if(v45Versions[store])v45Versions[store][id]=version;
+   }
+   state.cases=snapshot.data.cases;
+   state.batches=Array.isArray(snapshot.data.batches)?snapshot.data.batches:[];
+   const preferences=Array.isArray(snapshot.data.prefs)?snapshot.data.prefs:[];
+   state.nextCitizen=preferences.find(x=>x.id==='nextCitizen')?.value||citizenStart;
+   state.v10AddressPlaceholder=preferences.find(x=>x.id==='v10AddressPlaceholder')?.value||'.';
+   await v11RepairOccupationInPendingCases();
+   alertIndex();render();
+   return;
+ }
+ state.cases=await dbAll('cases');
+ await v11RepairOccupationInPendingCases();
+ state.batches=await dbAll('batches');
+ state.nextCitizen=(await dbGet('prefs','nextCitizen'))?.value||citizenStart;
+ state.v10AddressPlaceholder=(await dbGet('prefs','v10AddressPlaceholder'))?.value||'.';
+ alertIndex();render();
+}
 function installEvents(){
  $$('[data-tab]').forEach(b=>b.onclick=()=>go(b.dataset.tab));$$('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
  for(let id of ['btnImport','btnUploadDrop'])$(id).onclick=()=>$('fileInput').click();$('btnImportRef').onclick=()=>$('refInput').click();
