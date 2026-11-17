@@ -41,6 +41,19 @@ class PgConnection:
 
 def connect(dbpath):
     global conn
+    dsn = os.environ.get('DATABASE_URL', '').strip()
+    if dsn:
+        if not dsn.startswith(('postgres://', 'postgresql://')):
+            raise SystemExit('DATABASE_URL không hợp lệ')
+        conn = PgConnection(dsn)
+        conn.execute('CREATE TABLE IF NOT EXISTS records(mode TEXT NOT NULL,store TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,version INTEGER NOT NULL,PRIMARY KEY(mode,store,id))')
+        conn.execute('CREATE TABLE IF NOT EXISTS events(rev BIGSERIAL PRIMARY KEY,mode TEXT NOT NULL,store TEXT NOT NULL,id TEXT NOT NULL,changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_events_mode_rev ON events(mode,rev)')
+        conn.execute('CREATE TABLE IF NOT EXISTS citizens(mode TEXT NOT NULL,number TEXT NOT NULL,case_id TEXT NOT NULL,PRIMARY KEY(mode,number))')
+        conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS citizens_case ON citizens(mode,case_id)')
+        conn.execute('CREATE TABLE IF NOT EXISTS citizen_settings(mode TEXT PRIMARY KEY,next_number TEXT NOT NULL,updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+        conn.execute('CREATE TABLE IF NOT EXISTS citizen_settings_audit(id BIGSERIAL PRIMARY KEY,mode TEXT NOT NULL,old_number TEXT NOT NULL,new_number TEXT NOT NULL,changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
+        return
     conn = sqlite3.connect(
         dbpath,
         check_same_thread=False,
@@ -214,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/health":
-            return self.send({"ok": True, "shared": True})
+            return self.send({"ok": True, "shared": True, "persistent": bool(os.environ.get("DATABASE_URL")), "storage": "PostgreSQL" if os.environ.get("DATABASE_URL") else "SQLite temporary"})
 
         try:
             current_mode = self.parse_mode()
