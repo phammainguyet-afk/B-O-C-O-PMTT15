@@ -20,6 +20,7 @@ USERNAME = os.environ.get("PMTT_USER", "")
 PASSWORD = os.environ.get("PMTT_PASSWORD", "")
 MAX_BODY = 35 * 1024 * 1024
 START = "070000004288"
+ADMIN_PIN = os.environ.get("PMTT_ADMIN_PIN", "")
 
 
 def connect(dbpath):
@@ -63,6 +64,48 @@ def connect(dbpath):
         CREATE UNIQUE INDEX IF NOT EXISTS citizens_case
         ON citizens(mode, case_id)
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS citizen_settings (
+            mode TEXT PRIMARY KEY, next_number TEXT NOT NULL,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS citizen_settings_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mode TEXT NOT NULL, old_number TEXT NOT NULL,
+            new_number TEXT NOT NULL,
+            changed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def valid_citizen_number(s):
+    return isinstance(s, str) and len(s) == 12 and s.isascii() and s.isdigit() and s != "000000000000"
+
+
+def next_free_number(m):
+    row = conn.execute("SELECT next_number FROM citizen_settings WHERE mode=?", (m,)).fetchone()
+    n = int(row[0] if row else START)
+    while n <= 999999999999:
+        candidate = str(n).zfill(12)
+        already = conn.execute("SELECT 1 FROM citizens WHERE mode=? AND number=?", (m, candidate)).fetchone()
+        imported = conn.execute(
+            "SELECT 1 FROM records WHERE mode=? AND store='cases' AND json_extract(payload,'$.fields[3]')=? LIMIT 1",
+            (m, candidate)
+        ).fetchone()
+        if not already and not imported:
+            return candidate
+        n += 1
+    raise ValueError("Đã hết dãy số 12 chữ số")
+
+
+def save_next_number(m, n):
+    conn.execute(
+        "INSERT INTO citizen_settings(mode,next_number,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) "
+        "ON CONFLICT(mode) DO UPDATE SET next_number=excluded.next_number, updated_at=CURRENT_TIMESTAMP",
+        (m, n)
+    )
 
 
 def mode(value):
@@ -159,6 +202,11 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             current_mode = self.parse_mode()
+
+            if route == "/api/citizen-config":
+                with lock:
+                    next_number = next_free_number(current_mode)
+                return self.send({"next": next_number, "mode": current_mode, "automatic": True})
 
             if route == "/api/snapshot":
                 with lock:
@@ -264,6 +312,39 @@ class Handler(BaseHTTPRequestHandler):
 
             data = json.loads(self.rfile.read(length))
 
+            if url.path == "/api/citizen-config":
+                if not ADMIN_PIN:
+                    return self.send({"error": "Chưa cấu hình PMTT_ADMIN_PIN trên Render"}, 503)
+                if not hmac.compare_digest(self.headers.get("X-PMTT-Admin-Pin", ""), ADMIN_PIN):
+                    return self.send({"error": "Mã quản trị không đúng"}, 403)
+                candidate = data.get("next")
+                expected = data.get("expected")
+                if not valid_citizen_number(candidate):
+                    raise ValueError("Số mới phải gồm 12 chữ số và không được toàn số 0")
+                with lock:
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        current = next_free_number(current_mode)
+                        if expected != current:
+                            raise RuntimeError("Số tiếp theo đã thay đổi trên máy khác. Vui lòng tải lại.")
+                        used = conn.execute("SELECT 1 FROM citizens WHERE mode=? AND number=?", (current_mode,candidate)).fetchone()
+                        in_cases = conn.execute(
+                            "SELECT 1 FROM records WHERE mode=? AND store='cases' AND json_extract(payload,'$.fields[3]')=? LIMIT 1",
+                            (current_mode, candidate)
+                        ).fetchone()
+                        if used or in_cases:
+                            raise RuntimeError("Số này đã được sử dụng; vui lòng chọn số khác")
+                        save_next_number(current_mode,candidate)
+                        conn.execute(
+                            "INSERT INTO citizen_settings_audit(mode,old_number,new_number) VALUES(?,?,?)",
+                            (current_mode,current,candidate)
+                        )
+                        conn.execute("COMMIT")
+                    except Exception:
+                        conn.execute("ROLLBACK")
+                        raise
+                return self.send({"ok": True, "next": candidate, "mode": current_mode})
+
             if url.path in ("/api/put", "/api/transaction"):
                 operations = (
                     data.get("operations")
@@ -352,7 +433,6 @@ class Handler(BaseHTTPRequestHandler):
                                     if (
                                         len(number) != 12
                                         or not number.isdigit()
-                                        or number < START
                                     ):
                                         raise ValueError(
                                             "CCCD tự cấp không hợp lệ"
@@ -483,33 +563,9 @@ class Handler(BaseHTTPRequestHandler):
                         if existing:
                             number = existing[0]
                         else:
-                            last = conn.execute(
-                                "SELECT MAX(number) FROM citizens "
-                                "WHERE mode=?",
-                                (current_mode,)
-                            ).fetchone()[0]
-
-                            next_number = max(
-                                int(START),
-                                int(last) + 1
-                                if last else int(START)
-                            )
-
-                            while conn.execute(
-                                "SELECT 1 FROM records "
-                                "WHERE mode=? AND store='cases' "
-                                "AND json_extract("
-                                "payload,'$.fields[3]')=?",
-                                (
-                                    current_mode,
-                                    str(next_number).zfill(12)
-                                )
-                            ).fetchone():
-                                next_number += 1
-
-                            number = str(
-                                next_number
-                            ).zfill(12)
+                            next_number = int(next_free_number(current_mode))
+                            number = str(next_number).zfill(12)
+                            save_next_number(current_mode, str(next_number + 1).zfill(12))
 
                             conn.execute(
                                 "INSERT INTO citizens"
